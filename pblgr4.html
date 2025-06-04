@@ -1,0 +1,792 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Smart Trash Detection Dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.13.0"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <style>
+    :root {
+      --primary: #2d3748;
+      --secondary: #4a5568;
+      --accent: #38b2ac;
+      --success: #48bb78;
+      --warning: #ecc94b;
+      --danger: #e53e3e;
+    }
+    
+    body {
+      background: linear-gradient(135deg, #1a202c 0%, #2d3748 100%);
+      color: #e2e8f0;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+    
+    #video-container {
+      position: relative;
+      width: 100%;
+      height: 0;
+      padding-bottom: 56.25%;
+      background: #000;
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: 0 10px 25px rgba(0, 0, 0, 0.3);
+    }
+    
+    #video, #canvas, #stream-display {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+    
+    #canvas {
+      pointer-events: none;
+      z-index: 10;
+    }
+    
+    #stream-display {
+      z-index: 5;
+      display: none;
+    }
+    
+    .connection-status {
+      display: inline-block;
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      margin-right: 5px;
+    }
+    
+    .status-connecting { background: #ecc94b; }
+    .status-connected { background: #48bb78; }
+    .status-error { background: #e53e3e; }
+    
+    .card {
+      background: rgba(45, 55, 72, 0.7);
+      backdrop-filter: blur(10px);
+      border-radius: 12px;
+      padding: 20px;
+      box-shadow: 0 8px 20px rgba(0, 0, 0, 0.2);
+      border: 1px solid rgba(74, 85, 104, 0.5);
+      transition: all 0.3s ease;
+    }
+    
+    .card:hover {
+      transform: translateY(-5px);
+      box-shadow: 0 12px 25px rgba(0, 0, 0, 0.3);
+    }
+    
+    .stat-card {
+      text-align: center;
+      padding: 15px;
+      border-radius: 12px;
+      background: rgba(26, 32, 44, 0.6);
+      border: 1px solid rgba(74, 85, 104, 0.4);
+    }
+    
+    .stat-value {
+      font-size: 2rem;
+      font-weight: 700;
+      margin: 10px 0;
+    }
+    
+    .detection-box {
+      position: absolute;
+      border: 3px solid;
+      z-index: 20;
+    }
+    
+    .detection-label {
+      position: absolute;
+      background: rgba(0, 0, 0, 0.7);
+      color: white;
+      padding: 4px 8px;
+      font-size: 14px;
+      border-radius: 4px;
+      z-index: 30;
+    }
+    
+    .progress-ring {
+      transform: rotate(-90deg);
+    }
+    
+    .progress-ring-circle {
+      transition: stroke-dashoffset 0.3s;
+    }
+    
+    .log-entry {
+      padding: 8px 12px;
+      border-radius: 8px;
+      margin-bottom: 6px;
+      background: rgba(45, 55, 72, 0.5);
+      border-left: 3px solid;
+      animation: fadeIn 0.3s ease;
+    }
+    
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateX(-10px); }
+      to { opacity: 1; transform: translateX(0); }
+    }
+    
+    .pulse {
+      animation: pulse 2s infinite;
+    }
+    
+    @keyframes pulse {
+      0% { box-shadow: 0 0 0 0 rgba(56, 178, 172, 0.7); }
+      70% { box-shadow: 0 0 0 10px rgba(56, 178, 172, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(56, 178, 172, 0); }
+    }
+    
+    .glow {
+      box-shadow: 0 0 15px rgba(56, 178, 172, 0.7);
+    }
+    
+    .type-tag {
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 20px;
+      font-size: 12px;
+      margin: 2px;
+    }
+    
+    .bottle { background: rgba(72, 187, 120, 0.2); border: 1px solid #48bb78; }
+    .cup { background: rgba(56, 178, 172, 0.2); border: 1px solid #38b2ac; }
+    .bowl { background: rgba(236, 201, 75, 0.2); border: 1px solid #ecc94b; }
+  </style>
+</head>
+<body class="min-h-screen">
+  <div class="container mx-auto px-4 py-8">
+    <div class="flex flex-col md:flex-row gap-8">
+      <!-- Left Column - Video and Stats -->
+      <div class="w-full md:w-2/3">
+        <!-- Header -->
+        <div class="flex flex-col md:flex-row justify-between items-center mb-8">
+          <div>
+            <h1 class="text-3xl md:text-4xl font-bold text-white">Smart Trash Detection</h1>
+            <p class="text-teal-400 mt-2">Real-time object recognition for waste management</p>
+          </div>
+          <div class="mt-4 md:mt-0">
+            <div class="flex items-center bg-gray-800 rounded-full px-4 py-2">
+              <div class="h-3 w-3 bg-green-500 rounded-full mr-2"></div>
+              <span class="text-sm">System Active</span>
+            </div>
+          </div>
+        </div>
+        
+        <!-- Video Container -->
+        <div class="card mb-6">
+          <div id="video-container">
+            <video id="video" autoplay muted playsinline></video>
+            <canvas id="canvas"></canvas>
+            <div id="stream-display"></div>
+            <div id="stream-status" class="absolute bottom-4 left-4 bg-black bg-opacity-70 text-white px-3 py-2 rounded-lg text-sm">
+              <span class="connection-status status-connected"></span>
+              <span class="status-text">Camera Active</span>
+            </div>
+          </div>
+        </div>
+        
+        <!-- Stats Cards -->
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
+          <div class="stat-card">
+            <div class="flex items-center justify-center">
+              <i class="fas fa-recycle text-green-400 text-xl mr-2"></i>
+              <span class="text-gray-400">Detected Items</span>
+            </div>
+            <div class="stat-value text-green-400" id="total">0</div>
+            <div class="text-xs text-gray-500">Total detected objects</div>
+          </div>
+          
+          <div class="stat-card">
+            <div class="flex items-center justify-center">
+              <i class="fas fa-history text-teal-400 text-xl mr-2"></i>
+              <span class="text-gray-400">Last Detection</span>
+            </div>
+            <div class="stat-value text-teal-400" id="last">—</div>
+            <div class="text-xs text-gray-500">Most recent item found</div>
+          </div>
+          
+          <div class="stat-card">
+            <div class="flex items-center justify-center">
+              <i class="fas fa-bolt text-yellow-400 text-xl mr-2"></i>
+              <span class="text-gray-400">Detection Speed</span>
+            </div>
+            <div class="stat-value text-yellow-400" id="speed">—</div>
+            <div class="text-xs text-gray-500">Frames per second</div>
+          </div>
+        </div>
+        
+        <!-- Detection Controls -->
+        <div class="card mb-6">
+          <h2 class="text-xl font-semibold mb-4 text-white">Detection Controls</h2>
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label class="block text-sm text-gray-300 mb-2">Detection Mode</label>
+              <div class="flex space-x-2">
+                <button id="mode-realtime" class="flex-1 bg-teal-600 hover:bg-teal-700 px-4 py-2 rounded-lg transition">Real-time</button>
+                <button id="mode-snapshot" class="flex-1 bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded-lg transition">Snapshot</button>
+              </div>
+            </div>
+            
+            <div>
+              <label class="block text-sm text-gray-300 mb-2">Confidence Threshold</label>
+              <div class="flex items-center">
+                <input id="threshold" type="range" min="10" max="90" value="65" class="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer">
+                <span id="threshold-val" class="ml-3 text-white w-12">65%</span>
+              </div>
+            </div>
+          </div>
+          
+          <div class="mt-6 flex flex-wrap gap-3">
+            <button id="btn-snapshot" class="bg-teal-600 hover:bg-teal-700 px-5 py-2 rounded-lg transition flex items-center">
+              <i class="fas fa-camera mr-2"></i> Take Snapshot
+            </button>
+            <button id="btn-pause" class="bg-purple-600 hover:bg-purple-700 px-5 py-2 rounded-lg transition flex items-center">
+              <i class="fas fa-pause mr-2"></i> Pause
+            </button>
+            <button id="btn-switch" class="bg-indigo-600 hover:bg-indigo-700 px-5 py-2 rounded-lg transition flex items-center">
+              <i class="fas fa-sync mr-2"></i> Switch Camera
+            </button>
+            <button id="btn-reset" class="bg-red-600 hover:bg-red-700 px-5 py-2 rounded-lg transition flex items-center">
+              <i class="fas fa-redo mr-2"></i> Reset
+            </button>
+          </div>
+        </div>
+      </div>
+      
+      <!-- Right Column - Stats and Logs -->
+      <div class="w-full md:w-1/3">
+        <!-- Object Counts -->
+        <div class="card mb-6">
+          <h2 class="text-xl font-semibold mb-4 text-white">Object Counts</h2>
+          <div class="space-y-4">
+            <div>
+              <div class="flex justify-between items-center mb-2">
+                <div class="flex items-center">
+                  <i class="fas fa-wine-bottle text-green-400 mr-2"></i>
+                  <span>Bottles</span>
+                </div>
+                <span class="text-lg font-bold text-green-400" id="count-bottle">0</span>
+              </div>
+              <div class="w-full bg-gray-700 rounded-full h-2.5">
+                <div id="progress-bottle" class="bg-green-500 h-2.5 rounded-full" style="width: 0%"></div>
+              </div>
+            </div>
+            
+            <div>
+              <div class="flex justify-between items-center mb-2">
+                <div class="flex items-center">
+                  <i class="fas fa-mug-hot text-teal-400 mr-2"></i>
+                  <span>Cups</span>
+                </div>
+                <span class="text-lg font-bold text-teal-400" id="count-cup">0</span>
+              </div>
+              <div class="w-full bg-gray-700 rounded-full h-2.5">
+                <div id="progress-cup" class="bg-teal-500 h-2.5 rounded-full" style="width: 0%"></div>
+              </div>
+            </div>
+            
+            <div>
+              <div class="flex justify-between items-center mb-2">
+                <div class="flex items-center">
+                  <i class="fas fa-utensils text-yellow-400 mr-2"></i>
+                  <span>Bowls</span>
+                </div>
+                <span class="text-lg font-bold text-yellow-400" id="count-bowl">0</span>
+              </div>
+              <div class="w-full bg-gray-700 rounded-full h-2.5">
+                <div id="progress-bowl" class="bg-yellow-500 h-2.5 rounded-full" style="width: 0%"></div>
+              </div>
+            </div>
+          </div>
+          
+          <div class="mt-6">
+            <div class="flex justify-between text-sm text-gray-400 mb-2">
+              <span>Detection Distribution</span>
+              <span id="total-count">0 items</span>
+            </div>
+            <div class="flex flex-wrap gap-1">
+              <span class="type-tag bottle">Bottle <span id="percent-bottle">0%</span></span>
+              <span class="type-tag cup">Cup <span id="percent-cup">0%</span></span>
+              <span class="type-tag bowl">Bowl <span id="percent-bowl">0%</span></span>
+            </div>
+          </div>
+        </div>
+        
+        <!-- Activity Log -->
+        <div class="card h-full">
+          <h2 class="text-xl font-semibold mb-4 text-white">Activity Log</h2>
+          <div id="log-container" class="bg-gray-800 rounded-lg p-3 h-80 overflow-y-auto">
+            <div id="log" class="space-y-2">
+              <div class="log-entry" style="border-left-color: #48bb78;">
+                <div class="flex justify-between">
+                  <span><i class="fas fa-wine-bottle text-green-400 mr-2"></i> Bottle detected</span>
+                  <span class="text-gray-400 text-sm">Just now</span>
+                </div>
+                <div class="text-sm text-gray-300 mt-1">Confidence: 82%</div>
+              </div>
+              <div class="log-entry" style="border-left-color: #38b2ac;">
+                <div class="flex justify-between">
+                  <span><i class="fas fa-mug-hot text-teal-400 mr-2"></i> Cup detected</span>
+                  <span class="text-gray-400 text-sm">2 mins ago</span>
+                </div>
+                <div class="text-sm text-gray-300 mt-1">Confidence: 78%</div>
+              </div>
+              <div class="log-entry" style="border-left-color: #ecc94b;">
+                <div class="flex justify-between">
+                  <span><i class="fas fa-utensils text-yellow-400 mr-2"></i> Bowl detected</span>
+                  <span class="text-gray-400 text-sm">5 mins ago</span>
+                </div>
+                <div class="text-sm text-gray-300 mt-1">Confidence: 85%</div>
+              </div>
+            </div>
+          </div>
+          
+          <div class="mt-4 flex justify-between">
+            <button id="btn-download" class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded-lg text-sm flex items-center">
+              <i class="fas fa-download mr-2"></i> Export Log
+            </button>
+            <button id="btn-clear-log" class="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded-lg text-sm flex items-center">
+              <i class="fas fa-trash mr-2"></i> Clear Log
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+    
+    <!-- Footer -->
+    <div class="mt-8 text-center text-gray-500 text-sm">
+      <p>Powered by TensorFlow.js and COCO-SSD model | Real-time trash detection system</p>
+    </div>
+  </div>
+  
+  <script>
+    class Dashboard {
+      constructor() {
+        // Elements
+        this.video = document.getElementById('video');
+        this.canvas = document.getElementById('canvas');
+        this.ctx = this.canvas.getContext('2d');
+        this.totalEl = document.getElementById('total');
+        this.lastEl = document.getElementById('last');
+        this.speedEl = document.getElementById('speed');
+        this.logEl = document.getElementById('log');
+        this.threshIn = document.getElementById('threshold');
+        this.threshVal = document.getElementById('threshold-val');
+        this.btnPause = document.getElementById('btn-pause');
+        this.btnReset = document.getElementById('btn-reset');
+        this.btnSnapshot = document.getElementById('btn-snapshot');
+        this.btnSwitch = document.getElementById('btn-switch');
+        this.btnDownload = document.getElementById('btn-download');
+        this.btnClearLog = document.getElementById('btn-clear-log');
+        this.btnModeRealtime = document.getElementById('mode-realtime');
+        this.btnModeSnapshot = document.getElementById('mode-snapshot');
+        
+        // Count elements
+        this.countBottle = document.getElementById('count-bottle');
+        this.countCup = document.getElementById('count-cup');
+        this.countBowl = document.getElementById('count-bowl');
+        this.progressBottle = document.getElementById('progress-bottle');
+        this.progressCup = document.getElementById('progress-cup');
+        this.progressBowl = document.getElementById('progress-bowl');
+        this.percentBottle = document.getElementById('percent-bottle');
+        this.percentCup = document.getElementById('percent-cup');
+        this.percentBowl = document.getElementById('percent-bowl');
+        this.totalCountEl = document.getElementById('total-count');
+        
+        // State
+        this.model = null;
+        this.running = true;
+        this.threshold = this.threshIn.value / 100;
+        this.totalCount = 0;
+        this.counts = { bottle: 0, cup: 0, bowl: 0 };
+        this.lastTimestamp = 0;
+        this.fps = 0;
+        this.detectionMode = 'realtime';
+        this.camMode = 'environment';
+        this.stream = null;
+        
+        this._bindControls();
+        this._init();
+      }
+      
+      async _init() {
+        try {
+          // Show loading state
+          this._showLoading();
+          
+          // Load TensorFlow.js and COCO-SSD model
+          await tf.ready();
+          this.model = await cocoSsd.load();
+          
+          // Setup camera
+          await this._setupCamera();
+          
+          // Start detection loop
+          this.detectLoop();
+          
+          // Hide loading
+          this._hideLoading();
+          
+          // Add initial log entry
+          this._addLogEntry('System initialized and ready', 'system');
+        } catch (e) {
+          this._showError(`Initialization failed: ${e.message}`);
+        }
+      }
+      
+      async _setupCamera() {
+        try {
+          if (this.stream) {
+            this.stream.getTracks().forEach(track => track.stop());
+          }
+          
+          this.stream = await navigator.mediaDevices.getUserMedia({ 
+            video: { facingMode: this.camMode, width: { ideal: 1280 }, height: { ideal: 720 } } 
+          });
+          
+          this.video.srcObject = this.stream;
+          await new Promise(resolve => {
+            this.video.onloadedmetadata = resolve;
+          });
+          
+          this.video.play();
+          
+          // Set canvas dimensions to match video
+          this.canvas.width = this.video.videoWidth;
+          this.canvas.height = this.video.videoHeight;
+        } catch (e) {
+          this._showError(`Camera error: ${e.message}`);
+        }
+      }
+      
+      async detectLoop() {
+        if (!this.model || !this.running || this.detectionMode !== 'realtime') return;
+        
+        const startTime = performance.now();
+        
+        try {
+          // Run object detection
+          const predictions = await this.model.detect(this.video);
+          
+          // Clear canvas
+          this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+          
+          // Process predictions
+          let detectedItems = 0;
+          predictions.forEach(prediction => {
+            if (['bottle', 'cup', 'bowl'].includes(prediction.class) && prediction.score >= this.threshold) {
+              this._drawPrediction(prediction);
+              this._updateCounts(prediction.class, prediction.score);
+              detectedItems++;
+            }
+          });
+          
+          // Calculate FPS
+          const now = performance.now();
+          const elapsed = now - this.lastTimestamp;
+          this.lastTimestamp = now;
+          
+          if (elapsed > 0) {
+            this.fps = Math.round(1000 / elapsed);
+            this.speedEl.textContent = `${this.fps} FPS`;
+          }
+          
+          // Update UI
+          this.totalEl.textContent = this.totalCount;
+          
+          // Add log entry if new item detected
+          if (detectedItems > 0) {
+            this._addLogEntry(`${detectedItems} items detected`, 'detection');
+          }
+        } catch (e) {
+          console.error('Detection error:', e);
+        }
+        
+        // Continue loop
+        requestAnimationFrame(() => this.detectLoop());
+      }
+      
+      async takeSnapshot() {
+        if (!this.model) return;
+        
+        this.running = false;
+        this.btnPause.innerHTML = '<i class="fas fa-play mr-2"></i> Resume';
+        
+        try {
+          // Run detection on current frame
+          const predictions = await this.model.detect(this.video);
+          
+          // Clear canvas
+          this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+          
+          // Draw predictions
+          let detectedItems = 0;
+          predictions.forEach(prediction => {
+            if (['bottle', 'cup', 'bowl'].includes(prediction.class) && prediction.score >= this.threshold) {
+              this._drawPrediction(prediction);
+              this._updateCounts(prediction.class, prediction.score);
+              detectedItems++;
+            }
+          });
+          
+          // Update UI
+          this.totalEl.textContent = this.totalCount;
+          
+          if (detectedItems > 0) {
+            this._addLogEntry(`Snapshot: ${detectedItems} items detected`, 'snapshot');
+          } else {
+            this._addLogEntry('Snapshot: No items detected', 'snapshot');
+          }
+        } catch (e) {
+          console.error('Snapshot error:', e);
+          this._addLogEntry('Snapshot failed', 'error');
+        }
+      }
+      
+      _drawPrediction(prediction) {
+        const [x, y, width, height] = prediction.bbox;
+        const color = this._getClassColor(prediction.class);
+        
+        // Draw bounding box
+        this.ctx.strokeStyle = color;
+        this.ctx.lineWidth = 3;
+        this.ctx.strokeRect(x, y, width, height);
+        
+        // Draw label background
+        this.ctx.fillStyle = color;
+        this.ctx.fillRect(x, y > 20 ? y - 20 : 0, 120, 20);
+        
+        // Draw label text
+        this.ctx.fillStyle = 'white';
+        this.ctx.font = '14px Arial';
+        this.ctx.fillText(
+          `${prediction.class} ${Math.round(prediction.score * 100)}%`, 
+          x + 5, 
+          y > 20 ? y - 5 : 15
+        );
+      }
+      
+      _getClassColor(className) {
+        const colors = {
+          bottle: '#48bb78',
+          cup: '#38b2ac',
+          bowl: '#ecc94b'
+        };
+        return colors[className] || '#4a5568';
+      }
+      
+      _updateCounts(className, score) {
+        this.counts[className]++;
+        this.totalCount++;
+        
+        // Update UI
+        this.countBottle.textContent = this.counts.bottle;
+        this.countCup.textContent = this.counts.cup;
+        this.countBowl.textContent = this.counts.bowl;
+        
+        this.lastEl.textContent = `${className} ${Math.round(score * 100)}%`;
+        this.lastEl.className = 'stat-value ' + this._getClassTextColor(className);
+        
+        // Update progress bars
+        const maxCount = Math.max(1, this.counts.bottle, this.counts.cup, this.counts.bowl);
+        this.progressBottle.style.width = `${(this.counts.bottle / maxCount) * 100}%`;
+        this.progressCup.style.width = `${(this.counts.cup / maxCount) * 100}%`;
+        this.progressBowl.style.width = `${(this.counts.bowl / maxCount) * 100}%`;
+        
+        // Update percentages
+        const total = this.counts.bottle + this.counts.cup + this.counts.bowl;
+        if (total > 0) {
+          this.percentBottle.textContent = `${Math.round((this.counts.bottle / total) * 100)}%`;
+          this.percentCup.textContent = `${Math.round((this.counts.cup / total) * 100)}%`;
+          this.percentBowl.textContent = `${Math.round((this.counts.bowl / total) * 100)}%`;
+          this.totalCountEl.textContent = `${total} items`;
+        }
+      }
+      
+      _getClassTextColor(className) {
+        const colors = {
+          bottle: 'text-green-400',
+          cup: 'text-teal-400',
+          bowl: 'text-yellow-400'
+        };
+        return colors[className] || 'text-gray-400';
+      }
+      
+      _addLogEntry(message, type = 'info') {
+        const now = new Date();
+        const timeString = now.toLocaleTimeString();
+        
+        const typeStyles = {
+          detection: 'border-l-green-500',
+          snapshot: 'border-l-blue-500',
+          error: 'border-l-red-500',
+          system: 'border-l-purple-500',
+          info: 'border-l-gray-500'
+        };
+        
+        const typeIcons = {
+          detection: 'fa-bolt',
+          snapshot: 'fa-camera',
+          error: 'fa-exclamation-circle',
+          system: 'fa-cog',
+          info: 'fa-info-circle'
+        };
+        
+        const entry = document.createElement('div');
+        entry.className = `log-entry ${typeStyles[type] || 'border-l-gray-500'}`;
+        entry.innerHTML = `
+          <div class="flex justify-between">
+            <span><i class="fas ${typeIcons[type] || 'fa-info-circle'} ${type === 'detection' ? 'text-green-400' : type === 'snapshot' ? 'text-blue-400' : type === 'error' ? 'text-red-400' : 'text-purple-400'} mr-2"></i> ${message}</span>
+            <span class="text-gray-400 text-sm">${timeString}</span>
+          </div>
+        `;
+        
+        this.logEl.prepend(entry);
+        
+        // Auto-scroll to top
+        document.getElementById('log-container').scrollTop = 0;
+      }
+      
+      _resetCounts() {
+        this.totalCount = 0;
+        this.counts = { bottle: 0, cup: 0, bowl: 0 };
+        this.totalEl.textContent = '0';
+        this.lastEl.textContent = '—';
+        this.speedEl.textContent = '—';
+        
+        // Reset progress bars
+        this.progressBottle.style.width = '0%';
+        this.progressCup.style.width = '0%';
+        this.progressBowl.style.width = '0%';
+        
+        // Reset percentages
+        this.percentBottle.textContent = '0%';
+        this.percentCup.textContent = '0%';
+        this.percentBowl.textContent = '0%';
+        this.totalCountEl.textContent = '0 items';
+        
+        // Clear canvas
+        this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+      }
+      
+      _clearLog() {
+        this.logEl.innerHTML = '';
+      }
+      
+      _showLoading() {
+        // Simulate loading state
+        this._addLogEntry('Loading detection model...', 'system');
+      }
+      
+      _hideLoading() {
+        // Simulate loading completion
+      }
+      
+      _showError(message) {
+        this._addLogEntry(message, 'error');
+      }
+      
+      _bindControls() {
+        // Confidence slider
+        this.threshIn.addEventListener('input', (e) => {
+          this.threshold = e.target.value / 100;
+          this.threshVal.textContent = `${e.target.value}%`;
+          this._addLogEntry(`Confidence threshold set to ${e.target.value}%`, 'system');
+        });
+        
+        // Pause/Resume button
+        this.btnPause.addEventListener('click', () => {
+          this.running = !this.running;
+          this.btnPause.innerHTML = this.running 
+            ? '<i class="fas fa-pause mr-2"></i> Pause' 
+            : '<i class="fas fa-play mr-2"></i> Resume';
+          
+          this._addLogEntry(`Detection ${this.running ? 'resumed' : 'paused'}`, 'system');
+          
+          if (this.running && this.detectionMode === 'realtime') {
+            this.detectLoop();
+          }
+        });
+        
+        // Reset button
+        this.btnReset.addEventListener('click', () => {
+          this._resetCounts();
+          this._addLogEntry('Counters reset', 'system');
+        });
+        
+        // Snapshot button
+        this.btnSnapshot.addEventListener('click', () => {
+          this.takeSnapshot();
+        });
+        
+        // Switch camera button
+        this.btnSwitch.addEventListener('click', async () => {
+          this.camMode = this.camMode === 'environment' ? 'user' : 'environment';
+          await this._setupCamera();
+          this._addLogEntry(`Switched to ${this.camMode === 'environment' ? 'rear' : 'front'} camera`, 'system');
+          if (this.detectionMode === 'realtime' && this.running) {
+            this.detectLoop();
+          }
+        });
+        
+        // Download button
+        this.btnDownload.addEventListener('click', () => {
+          this._addLogEntry('Log data exported', 'system');
+          // Simulate download
+          alert('Log data exported successfully!');
+        });
+        
+        // Clear log button
+        this.btnClearLog.addEventListener('click', () => {
+          this._clearLog();
+          this._addLogEntry('Activity log cleared', 'system');
+        });
+        
+        // Detection mode buttons
+        this.btnModeRealtime.addEventListener('click', () => {
+          this.detectionMode = 'realtime';
+          this.btnModeRealtime.classList.add('bg-teal-600', 'glow');
+          this.btnModeSnapshot.classList.remove('bg-teal-600', 'glow');
+          this.btnModeSnapshot.classList.add('bg-gray-700');
+          
+          this._addLogEntry('Switched to real-time detection mode', 'system');
+          
+          if (this.running) {
+            this.detectLoop();
+          }
+        });
+        
+        this.btnModeSnapshot.addEventListener('click', () => {
+          this.detectionMode = 'snapshot';
+          this.btnModeSnapshot.classList.add('bg-teal-600', 'glow');
+          this.btnModeRealtime.classList.remove('bg-teal-600', 'glow');
+          this.btnModeRealtime.classList.add('bg-gray-700');
+          
+          this._addLogEntry('Switched to snapshot detection mode', 'system');
+        });
+      }
+    }
+    
+    // Initialize dashboard when page loads
+    window.addEventListener('DOMContentLoaded', () => {
+      const dashboard = new Dashboard();
+      
+      // Simulate initial detections for demo purposes
+      setTimeout(() => {
+        dashboard._updateCounts('bottle', 0.82);
+        dashboard._updateCounts('cup', 0.78);
+        dashboard._updateCounts('bowl', 0.85);
+      }, 1000);
+    });
+  </script>
+</body>
+</html>
